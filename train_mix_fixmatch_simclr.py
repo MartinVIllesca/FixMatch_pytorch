@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from models.model import WideResnet
-from datasets.cifar import get_train_loader, get_val_loader
+from datasets.cifar import get_train_loader, get_train_loader_mix, get_val_loader
 from label_guessor import LabelGuessor
 from lr_scheduler import WarmupCosineLrScheduler
 from models.ema import EMA
@@ -52,6 +52,7 @@ def train_one_epoch(epoch,
                     dltrain_f,
                     lb_guessor,
                     lambda_u,
+                    lambda_s,
                     n_iters,
                     logger,
                     ):
@@ -89,35 +90,46 @@ def train_one_epoch(epoch,
         logits_z = de_interleave(logit_z, 4 * mu + 1)
         logits = de_interleave(logits, 4 * mu + 1)
 
-        logits_u_w_z, logits_u_s_z = torch.split(logits_z[-2 * mu * bt:], bt * mu)
+        # SEPARACION DE ULTIMAS REPRESENTACIONES PARA SIMCLR
+        logits_s_w_z, logits_s_s_z = torch.split(logits_z[-2 * mu * bt:], bt * mu)
 
+        # SEPARACION DE LOGITS PARA ETAPA SUPERVISADA DE FIXMATCH
         logits_x = logits[:bt]
-        logits_u_w, logits_u_s = torch.split(logits[bt:], bt * mu)
+        # SEPARACION DE LOGITS PARA ETAPA NO SUPERVISADA DE FIXMATCH
+        logits_u_w, logits_u_s = torch.split(logits[bt:-2 * mu * bt], bt * mu)
 
+        # calculo de la mascara con transformacion debil de fixmatch
         with torch.no_grad():
             probs = torch.softmax(logits_u_w, dim=1)
             scores, lbs_u_guess = torch.max(probs, dim=1)
             mask = scores.ge(0.95).float()
 
+        # calcular perdida de fixmatch
+        loss_u = (criteria_u(logits_u_s, lbs_u_guess) * mask).mean()
+        loss_x = criteria_x(logits_x, lbs_x)
+        loss_s = criteria_z(logits_s_w_z, logits_s_s_z)
+
+        loss = loss_x + loss_u * lambda_u + loss_s * lambda_s
+
         # entrenar primero con simclr el espacio h de las imagenes separadas
-        if epoch % 2 == 0:
-            loss_simCLR = (criteria_z(logits_u_w_z, logits_u_s_z))
-
-            with torch.no_grad():
-                loss_u = (criteria_u(logits_u_s, lbs_u_guess) * mask).mean()
-                # loss_u = torch.zeros(1)
-                loss_x = criteria_x(logits_x, lbs_x)
-                # loss_x = torch.zeros(1)
-
-            loss = loss_simCLR
-        else:
-            with torch.no_grad():
-                loss_simCLR = (criteria_z(logits_u_w_z, logits_u_s_z))
-                # loss_simCLR = torch.zeros(1)
-
-            loss_u = (criteria_u(logits_u_s, lbs_u_guess) * mask).mean()
-            loss_x = criteria_x(logits_x, lbs_x)
-            loss = loss_x + lambda_u * loss_u
+        # if epoch % 2 == 0:
+        #     loss_simCLR = (criteria_z(logits_u_w_z, logits_u_s_z))
+        #
+        #     with torch.no_grad():
+        #         loss_u = (criteria_u(logits_u_s, lbs_u_guess) * mask).mean()
+        #         # loss_u = torch.zeros(1)
+        #         loss_x = criteria_x(logits_x, lbs_x)
+        #         # loss_x = torch.zeros(1)
+        #
+        #     loss = loss_simCLR
+        # else:
+        #     with torch.no_grad():
+        #         loss_simCLR = (criteria_z(logits_u_w_z, logits_u_s_z))
+        #         # loss_simCLR = torch.zeros(1)
+        #
+        #     loss_u = (criteria_u(logits_u_s, lbs_u_guess) * mask).mean()
+        #     loss_x = criteria_x(logits_x, lbs_x)
+        #     loss = loss_x + lambda_u * loss_u
         loss_u_real = (F.cross_entropy(logits_u_s, lbs_u_real) * mask).mean()
 
         # --------------------------------------
@@ -142,7 +154,7 @@ def train_one_epoch(epoch,
         loss_x_meter.update(loss_x.item())
         loss_u_meter.update(loss_u.item())
         loss_u_real_meter.update(loss_u_real.item())
-        loss_simclr_meter.update(loss_simCLR.item())
+        loss_simclr_meter.update(loss_s.item())
         mask_meter.update(mask.mean().item())
 
         corr_u_lb = (lbs_u_guess == lbs_u_real).float() * mask
@@ -221,6 +233,8 @@ def main():
                         help='number of training images for each epoch')
     parser.add_argument('--lam-u', type=float, default=1.,
                         help='coefficient of unlabeled loss')
+    parser.add_argument('--lam-s', type=float, default=0.2,
+                        help='coefficient of unlabeled loss SimCLR')
     parser.add_argument('--ema-alpha', type=float, default=0.999,
                         help='decay rate for ema module')
     parser.add_argument('--lr', type=float, default=0.03,
@@ -299,6 +313,7 @@ def main():
         dltrain_f=dltrain_f,
         lb_guessor=lb_guessor,
         lambda_u=args.lam_u,
+        lambda_s=args.lam_s,
         n_iters=n_iters_per_epoch,
         logger=logger
     )

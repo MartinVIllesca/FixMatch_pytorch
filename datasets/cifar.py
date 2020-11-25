@@ -270,7 +270,7 @@ def get_train_loader_mix(dataset, batch_size, mu, n_iters_per_epoch, L, root='da
         data=data_u,
         labels=label_u,
         is_train=True,
-        use_fixmatch_transform=1
+        use_fixmatch_transform=2
     )
     sampler_f = RandomSampler(ds_f, replacement=True, num_samples=mu * n_iters_per_epoch * batch_size)
     batch_sampler_f = BatchSampler(sampler_f, batch_size * mu, drop_last=True)
