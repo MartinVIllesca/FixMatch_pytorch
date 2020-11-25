@@ -153,7 +153,7 @@ class Cifar(Dataset):
                 T.ToTensor(),
             ])
             if use_fixmatch_transform == 0:
-                # TODO: agregar aumentaciones strong de fixmatch
+                # usa transformaciones de fixmatch
                 self.trans_strong = T.Compose([
                     T.Resize((32, 32)),
                     T.PadandRandomCrop(border=4, cropsize=(32, 32)),
@@ -163,6 +163,7 @@ class Cifar(Dataset):
                     T.ToTensor(),
                 ])
             else:
+                # usar transformaciones de simclr
                 self.trans_strong = torchvision.transforms.Compose(
                     [
                         torchvision.transforms.RandomResizedCrop(size=32),  # hardcoded 32 as the other transformation
@@ -230,6 +231,56 @@ def get_train_loader(dataset, batch_size, mu, n_iters_per_epoch, L, root='data',
         pin_memory=True
     )
     return dl_x, dl_u
+
+def get_train_loader_mix(dataset, batch_size, mu, n_iters_per_epoch, L, root='data', use_fixmatch=0):
+    data_x, label_x, data_u, label_u = load_data_train(L=L, dataset=dataset, dspth=root)
+
+    ds_x = Cifar(
+        dataset=dataset,
+        data=data_x,
+        labels=label_x,
+        is_train=True,
+        use_fixmatch_transform=use_fixmatch
+    )  # return an iter of num_samples length (all indices of samples)
+    sampler_x = RandomSampler(ds_x, replacement=True, num_samples=n_iters_per_epoch * batch_size)
+    batch_sampler_x = BatchSampler(sampler_x, batch_size, drop_last=True)  # yield a batch of samples one time
+    dl_x = torch.utils.data.DataLoader(
+        ds_x,
+        batch_sampler=batch_sampler_x,
+        num_workers=2,
+        pin_memory=True
+    )
+    ds_u = Cifar(
+        dataset=dataset,
+        data=data_u,
+        labels=label_u,
+        is_train=True,
+        use_fixmatch_transform=use_fixmatch
+    )
+    sampler_u = RandomSampler(ds_u, replacement=True, num_samples=mu * n_iters_per_epoch * batch_size)
+    batch_sampler_u = BatchSampler(sampler_u, batch_size * mu, drop_last=True)
+    dl_u = torch.utils.data.DataLoader(
+        ds_u,
+        batch_sampler=batch_sampler_u,
+        num_workers=2,
+        pin_memory=True
+    )
+    ds_f = Cifar(
+        dataset=dataset,
+        data=data_u,
+        labels=label_u,
+        is_train=True,
+        use_fixmatch_transform=1
+    )
+    sampler_f = RandomSampler(ds_f, replacement=True, num_samples=mu * n_iters_per_epoch * batch_size)
+    batch_sampler_f = BatchSampler(sampler_f, batch_size * mu, drop_last=True)
+    dl_f = torch.utils.data.DataLoader(
+        ds_f,
+        batch_sampler=batch_sampler_f,
+        num_workers=2,
+        pin_memory=True
+    )
+    return dl_x, dl_u, dl_f
 
 def get_val_loader(dataset, batch_size, num_workers, pin_memory=True, use_fixmatch=True):
     data, labels = load_data_val(dataset)
