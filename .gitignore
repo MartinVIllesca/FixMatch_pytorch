@@ -116,3 +116,5 @@ evaluate.py.old
 *png
 infer.py
 
+## datafiles
+*.tar.gz
