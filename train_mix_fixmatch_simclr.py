@@ -55,6 +55,8 @@ def train_one_epoch(epoch,
                     lambda_s,
                     n_iters,
                     logger,
+                    bt,
+                    mu
                     ):
     model.train()
     # loss_meter, loss_x_meter, loss_u_meter, loss_u_real_meter = [], [], [], []
@@ -81,8 +83,9 @@ def train_one_epoch(epoch,
 
         # --------------------------------------
 
-        bt = ims_x_weak.size(0)
-        mu = int(ims_u_weak.size(0) // bt)
+        # bt = ims_x_weak.size(0)
+        # mu = int(ims_u_weak.size(0) // bt)
+        print(mu, bt)
         imgs = torch.cat([ims_x_weak, ims_u_weak, ims_u_strong, ims_s_weak, ims_s_strong], dim=0).cuda()
         imgs = interleave(imgs, 4 * mu + 1)
         logits, logit_z = model(imgs)
@@ -178,6 +181,150 @@ def train_one_epoch(epoch,
     ema.update_buffer()
     return loss_meter.avg, loss_x_meter.avg, loss_u_meter.avg,\
            loss_u_real_meter.avg, loss_simclr_meter.avg, mask_meter.avg
+
+
+# def train_one_epoch_simclr(epoch,
+#                            model,
+#                            criteria_x,
+#                            criteria_u,
+#                            criteria_z,
+#                            optim,
+#                            lr_schdlr,
+#                            ema,
+#                            dltrain_x,
+#                            dltrain_u,
+#                            dltrain_f,
+#                            lb_guessor,
+#                            lambda_u,
+#                            lambda_s,
+#                            n_iters,
+#                            logger,
+#                            ):
+#     model.train()
+#     # loss_meter, loss_x_meter, loss_u_meter, loss_u_real_meter = [], [], [], []
+#     loss_meter = AverageMeter()
+#     loss_x_meter = AverageMeter()
+#     loss_u_meter = AverageMeter()
+#     loss_u_real_meter = AverageMeter()
+#     loss_simclr_meter = AverageMeter()
+#     # the number of correctly-predicted and gradient-considered unlabeled data
+#     n_correct_u_lbs_meter = AverageMeter()
+#     # the number of gradient-considered strong augmentation (logits above threshold) of unlabeled samples
+#     n_strong_aug_meter = AverageMeter()
+#     mask_meter = AverageMeter()
+#
+#     epoch_start = time.time()  # start time
+#     # dl_x, dl_u, dl_f = iter(dltrain_x), iter(dltrain_u), iter(dltrain_f)
+#     dl_f = iter(dltrain_f)
+#     for it in range(n_iters):
+#         # ims_x_weak, ims_x_strong, lbs_x = next(dl_x)
+#         # ims_u_weak, ims_u_strong, lbs_u_real = next(dl_u) # transformaciones de fixmatch
+#         ims_s_weak, ims_s_strong, lbs_s_real = next(dl_f) # con transformaciones de simclr
+#
+#         # lbs_x = lbs_x.cuda()
+#         # lbs_u_real = lbs_u_real.cuda()
+#
+#         # --------------------------------------
+#
+#         # bt = ims_x_weak.size(0)
+#         # mu = int(ims_u_weak.size(0) // bt)
+#         mu = int()
+#         # imgs = torch.cat([ims_x_weak, ims_u_weak, ims_u_strong, ims_s_weak, ims_s_strong], dim=0).cuda()
+#         imgs = torch.cat([ims_s_weak, ims_s_strong], dim=0).cuda()
+#         imgs = interleave(imgs, 2 * mu)
+#         logits, logit_z = model(imgs)
+#         # logits = model(imgs)
+#         logits_z = de_interleave(logit_z, 4 * mu + 1)
+#         logits = de_interleave(logits, 4 * mu + 1)
+#
+#         # SEPARACION DE ULTIMAS REPRESENTACIONES PARA SIMCLR
+#         logits_s_w_z, logits_s_s_z = torch.split(logits_z[-2 * mu * bt:], bt * mu)
+#
+#         # SEPARACION DE LOGITS PARA ETAPA SUPERVISADA DE FIXMATCH
+#         logits_x = logits[:bt]
+#         # SEPARACION DE LOGITS PARA ETAPA NO SUPERVISADA DE FIXMATCH
+#         logits_u_w, logits_u_s = torch.split(logits[bt:-2 * mu * bt], bt * mu)
+#
+#         # calculo de la mascara con transformacion debil de fixmatch
+#         with torch.no_grad():
+#             probs = torch.softmax(logits_u_w, dim=1)
+#             scores, lbs_u_guess = torch.max(probs, dim=1)
+#             mask = scores.ge(0.95).float()
+#
+#         # calcular perdida de fixmatch
+#         loss_u = (criteria_u(logits_u_s, lbs_u_guess) * mask).mean()
+#         loss_x = criteria_x(logits_x, lbs_x)
+#         loss_s = criteria_z(logits_s_w_z, logits_s_s_z)
+#
+#         loss = loss_x + loss_u * lambda_u + loss_s * lambda_s
+#
+#         # entrenar primero con simclr el espacio h de las imagenes separadas
+#         # if epoch % 2 == 0:
+#         #     loss_simCLR = (criteria_z(logits_u_w_z, logits_u_s_z))
+#         #
+#         #     with torch.no_grad():
+#         #         loss_u = (criteria_u(logits_u_s, lbs_u_guess) * mask).mean()
+#         #         # loss_u = torch.zeros(1)
+#         #         loss_x = criteria_x(logits_x, lbs_x)
+#         #         # loss_x = torch.zeros(1)
+#         #
+#         #     loss = loss_simCLR
+#         # else:
+#         #     with torch.no_grad():
+#         #         loss_simCLR = (criteria_z(logits_u_w_z, logits_u_s_z))
+#         #         # loss_simCLR = torch.zeros(1)
+#         #
+#         #     loss_u = (criteria_u(logits_u_s, lbs_u_guess) * mask).mean()
+#         #     loss_x = criteria_x(logits_x, lbs_x)
+#         #     loss = loss_x + lambda_u * loss_u
+#         loss_u_real = (F.cross_entropy(logits_u_s, lbs_u_real) * mask).mean()
+#
+#         # --------------------------------------
+#
+#         # mask, lbs_u_guess = lb_guessor(model, ims_u_weak.cuda())
+#         # n_x = ims_x_weak.size(0)
+#         # ims_x_u = torch.cat([ims_x_weak, ims_u_strong]).cuda()
+#         # logits_x_u = model(ims_x_u)
+#         # logits_x, logits_u = logits_x_u[:n_x], logits_x_u[n_x:]
+#         # loss_x = criteria_x(logits_x, lbs_x)
+#         # loss_u = (criteria_u(logits_u, lbs_u_guess) * mask).mean()
+#         # loss = loss_x + lambda_u * loss_u
+#         # loss_u_real = (F.cross_entropy(logits_u, lbs_u_real) * mask).mean()
+#
+#         optim.zero_grad()
+#         loss.backward()
+#         optim.step()
+#         ema.update_params()
+#         lr_schdlr.step()
+#
+#         loss_meter.update(loss.item())
+#         loss_x_meter.update(loss_x.item())
+#         loss_u_meter.update(loss_u.item())
+#         loss_u_real_meter.update(loss_u_real.item())
+#         loss_simclr_meter.update(loss_s.item())
+#         mask_meter.update(mask.mean().item())
+#
+#         corr_u_lb = (lbs_u_guess == lbs_u_real).float() * mask
+#         n_correct_u_lbs_meter.update(corr_u_lb.sum().item())
+#         n_strong_aug_meter.update(mask.sum().item())
+#
+#         if (it + 1) % 512 == 0:
+#             t = time.time() - epoch_start
+#
+#             lr_log = [pg['lr'] for pg in optim.param_groups]
+#             lr_log = sum(lr_log) / len(lr_log)
+#
+#             logger.info("epoch:{}, iter: {}. loss: {:.4f}. loss_u: {:.4f}. loss_x: {:.4f}. loss_u_real: {:.4f}. "
+#                         " loss_simclr: {:.4f} n_correct_u: {:.2f}/{:.2f}. "
+#                         "Mask:{:.4f} . LR: {:.4f}. Time: {:.2f}".format(
+#                 epoch, it + 1, loss_meter.avg, loss_u_meter.avg, loss_x_meter.avg, loss_u_real_meter.avg,
+#                 loss_simclr_meter.avg, n_correct_u_lbs_meter.avg, n_strong_aug_meter.avg, mask_meter.avg, lr_log, t))
+#
+#             epoch_start = time.time()
+#
+#     ema.update_buffer()
+#     return loss_meter.avg, loss_x_meter.avg, loss_u_meter.avg,\
+#            loss_u_real_meter.avg, loss_simclr_meter.avg, mask_meter.avg
 
 
 def evaluate(ema, dataloader, criterion):
@@ -315,13 +462,20 @@ def main():
         lambda_u=args.lam_u,
         lambda_s=args.lam_s,
         n_iters=n_iters_per_epoch,
-        logger=logger
+        logger=logger,
+        bt=args.batchsize,
+        mu=args.mu
     )
     best_acc = -1
     best_epoch = 0
     logger.info('-----------start training--------------')
     for epoch in range(args.n_epoches):
+
+        # if epoch < 60: # entrenar simclr
+        #     train_loss, loss_x, loss_u, loss_u_real, loss_simclr, mask_mean = train_one_epoch_simclr(epoch, **train_args)
+        # else:
         train_loss, loss_x, loss_u, loss_u_real, loss_simclr, mask_mean = train_one_epoch(epoch, **train_args)
+
         # torch.cuda.empty_cache()
 
         top1, top5, valid_loss = evaluate(ema, dlval, criteria_x)

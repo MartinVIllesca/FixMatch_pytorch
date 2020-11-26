@@ -118,3 +118,6 @@ infer.py
 
 ## datafiles
 *.tar.gz
+
+## runs
+runs/
