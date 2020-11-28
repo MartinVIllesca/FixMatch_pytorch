@@ -193,7 +193,8 @@ class WideResnet(nn.Module):
         feat = self.backbone(x)[-1]
         h = torch.mean(feat, dim=(2, 3))
         # esta linea es para redefinir h
-        feat = self.classifier(h.detach())
+        # feat = self.classifier(h.detach())
+        feat = self.classifier(h)
         z = self.projector(h)
         return feat, z
 
