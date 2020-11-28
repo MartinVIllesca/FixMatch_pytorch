@@ -35,19 +35,8 @@ def set_model(args):
     model.cuda()
     criteria_x = nn.CrossEntropyLoss().cuda()
     criteria_u = nn.CrossEntropyLoss(reduction='none').cuda()
-    criteria_z = NT_Xent(args.batchsize, args.temperature, 1)
+    criteria_z = NT_Xent(args.batchsize, args.temperature, args.mu)
     return model, criteria_x, criteria_u, criteria_z
-
-
-def iic(z, zt):
-    C = 10
-    EPS = 1e-9
-    P = (z.unsqueeze(2) * zt.unsqueeze(1)).sum(dim=0)
-    P = ((P + P.t()) / 2) / P.sum()
-    P[(P < EPS).data] = EPS
-    Pi = P.sum(dim=1).view(C, 1).expand(C, C)
-    Pj = P.sum(dim=0).view(1, C).expand(C, C)
-    return (P * (torch.log(Pi) + torch.log(Pj) - torch.log(P))).sum()
 
 
 def train_one_epoch(epoch,
@@ -230,7 +219,7 @@ def train_one_epoch_simclr(epoch,
     # dl_x, dl_u, dl_f = iter(dltrain_x), iter(dltrain_u), iter(dltrain_f)
     dl_x, dl_f = iter(dltrain_x), iter(dltrain_f)
     # dl_f = iter(dltrain_f)
-    mu = 1
+    # mu = 1
     for it in range(n_iters):
         ims_x_weak, _, lbs_x = next(dl_x)
         # ims_u_weak, ims_u_strong, lbs_u_real = next(dl_u) # transformaciones de fixmatch
