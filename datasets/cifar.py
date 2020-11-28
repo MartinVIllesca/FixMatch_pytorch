@@ -265,6 +265,8 @@ def get_train_loader_mix(dataset, batch_size, mu, n_iters_per_epoch, L, root='da
         num_workers=2,
         pin_memory=True
     )
+    # se tiene una imagen por etiqueta para simclr
+    mu = 1
     ds_f = Cifar(
         dataset=dataset,
         data=data_u,
