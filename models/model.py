@@ -186,7 +186,7 @@ class WideResnet(nn.Module):
         self.projector = nn.Sequential(
             nn.Linear(64 * self.k, 64 * self.k, bias=False),
             nn.ReLU(),
-            nn.Linear(64 * self.k, n_classes, bias=False),
+            nn.Linear(64 * self.k, n_classes * 12, bias=False),
         )
 
     def forward(self, x):
