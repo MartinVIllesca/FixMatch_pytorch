@@ -221,49 +221,22 @@ def train_one_epoch_simclr(epoch,
     # dl_f = iter(dltrain_f)
     # mu = 1
     for it in range(n_iters):
-        ims_x_weak, _, lbs_x = next(dl_x)
-        # ims_u_weak, ims_u_strong, lbs_u_real = next(dl_u) # transformaciones de fixmatch
         ims_s_weak, ims_s_strong, lbs_s_real = next(dl_f) # con transformaciones de simclr
 
-        lbs_x = lbs_x.cuda()
-        # lbs_u_real = lbs_u_real.cuda()
-
         # --------------------------------------
 
-        # bt = ims_x_weak.size(0)
-        # mu = int(ims_u_weak.size(0) // bt)
-        # imgs = torch.cat([ims_x_weak, ims_u_weak, ims_u_strong, ims_s_weak, ims_s_strong], dim=0).cuda()
-        imgs = torch.cat([ims_x_weak, ims_s_weak, ims_s_strong], dim=0).cuda()
-        # imgs = torch.cat([ims_s_weak, ims_s_strong], dim=0).cuda()
-        imgs = interleave(imgs, 2 * mu + 1)
+        imgs = torch.cat([ims_s_weak, ims_s_strong], dim=0).cuda()
+        imgs = interleave(imgs, 2 * mu)
         logits, logit_z = model(imgs)
-        # logits = model(imgs)
-        logits_z = de_interleave(logit_z, 2 * mu + 1)
-        logits = de_interleave(logits, 2 * mu + 1)
+        logits_z = de_interleave(logit_z, 2 * mu)
+        logits = de_interleave(logits, 2 * mu)
 
         # SEPARACION DE ULTIMAS REPRESENTACIONES PARA SIMCLR
-        # logits_s_w_z, logits_s_s_z = torch.split(logits_z[-2 * mu * bt:], bt * mu)
-        logits_s_w_z, logits_s_s_z = torch.split(logits_z[bt:], bt * mu)
+        logits_s_w_z, logits_s_s_z = torch.split(logits_z, bt * mu)
 
-        # SEPARACION DE LOGITS PARA ETAPA SUPERVISADA DE FIXMATCH
-        logits_x = logits[:bt]
-        # SEPARACION DE LOGITS PARA ETAPA NO SUPERVISADA DE FIXMATCH
-        # logits_u_w, logits_u_s = torch.split(logits[bt:-2 * mu * bt], bt * mu)
-
-        # calculo de la mascara con transformacion debil de fixmatch
-        # with torch.no_grad():
-        #     probs = torch.softmax(logits_u_w, dim=1)
-        #     scores, lbs_u_guess = torch.max(probs, dim=1)
-        #     mask = scores.ge(0.95).float()
-
-        # calcular perdida de fixmatch
-        # loss_u = (criteria_u(logits_u_s, lbs_u_guess) * mask).mean()
-        loss_x = criteria_x(logits_x, lbs_x)
         loss_s = criteria_z(logits_s_w_z, logits_s_s_z)
 
-        # loss = loss_x + loss_u * lambda_u + loss_s * lambda_s
-        loss = loss_x + loss_s
-        # loss = loss_s * lambda_s
+        loss = loss_s / mu
 
         optim.zero_grad()
         loss.backward()
@@ -272,15 +245,7 @@ def train_one_epoch_simclr(epoch,
         lr_schdlr.step()
 
         loss_meter.update(loss.item())
-        loss_x_meter.update(loss_x.item())
-        # loss_u_meter.update(loss_u.item())
-        # loss_u_real_meter.update(loss_u_real.item())
         loss_simclr_meter.update(loss_s.item())
-        # mask_meter.update(mask.mean().item())
-
-        # corr_u_lb = (lbs_u_guess == lbs_u_real).float() * mask
-        # n_correct_u_lbs_meter.update(corr_u_lb.sum().item())
-        # n_strong_aug_meter.update(mask.sum().item())
 
         if (it + 1) % 512 == 0:
             t = time.time() - epoch_start
@@ -288,126 +253,10 @@ def train_one_epoch_simclr(epoch,
             lr_log = [pg['lr'] for pg in optim.param_groups]
             lr_log = sum(lr_log) / len(lr_log)
 
-            logger.info("epoch:{}, iter: {}. loss: {:.4f}. loss_x: {:.4f}. "
+            logger.info("epoch:{}, iter: {}. loss: {:.4f}. "
                         " loss_simclr: {:.4f}. LR: {:.4f}. Time: {:.2f}".format(
-                epoch, it + 1, loss_meter.avg, loss_x_meter.avg,
+                epoch, it + 1, loss_meter.avg,
                 loss_simclr_meter.avg, lr_log, t))
-
-            epoch_start = time.time()
-
-    ema.update_buffer()
-    return loss_meter.avg, loss_x_meter.avg, loss_u_meter.avg,\
-           loss_u_real_meter.avg, loss_simclr_meter.avg, mask_meter.avg
-
-
-def train_one_epoch_onlycl(epoch,
-                           model,
-                           criteria_x,
-                           criteria_u,
-                           criteria_z,
-                           optim,
-                           lr_schdlr,
-                           ema,
-                           dltrain_x,
-                           dltrain_u,
-                           dltrain_f,
-                           lb_guessor,
-                           lambda_u,
-                           lambda_s,
-                           n_iters,
-                           logger,
-                           bt,
-                           mu
-                           ):
-    model.train()
-    # loss_meter, loss_x_meter, loss_u_meter, loss_u_real_meter = [], [], [], []
-    loss_meter = AverageMeter()
-    loss_x_meter = AverageMeter()
-    loss_u_meter = AverageMeter()
-    loss_u_real_meter = AverageMeter()
-    loss_simclr_meter = AverageMeter()
-    # the number of correctly-predicted and gradient-considered unlabeled data
-    n_correct_u_lbs_meter = AverageMeter()
-    # the number of gradient-considered strong augmentation (logits above threshold) of unlabeled samples
-    n_strong_aug_meter = AverageMeter()
-    mask_meter = AverageMeter()
-
-    epoch_start = time.time()  # start time
-    # dl_x, dl_u, dl_f = iter(dltrain_x), iter(dltrain_u), iter(dltrain_f)
-    dl_x = iter(dltrain_x)
-    # dl_f = iter(dltrain_f)
-    mu = 1
-    for it in range(n_iters):
-        ims_x_weak, _, lbs_x = next(dl_x)
-        # ims_u_weak, ims_u_strong, lbs_u_real = next(dl_u) # transformaciones de fixmatch
-        # ims_s_weak, ims_s_strong, lbs_s_real = next(dl_f) # con transformaciones de simclr
-
-        lbs_x = lbs_x.cuda()
-        # lbs_u_real = lbs_u_real.cuda()
-
-        # --------------------------------------
-
-        # bt = ims_x_weak.size(0)
-        # mu = int(ims_u_weak.size(0) // bt)
-        # imgs = torch.cat([ims_x_weak, ims_u_weak, ims_u_strong, ims_s_weak, ims_s_strong], dim=0).cuda()
-        # imgs = torch.cat([ims_x_weak], dim=0).cuda()
-        # imgs = torch.cat([ims_s_weak, ims_s_strong], dim=0).cuda()
-        # imgs = interleave(imgs, 1)
-        logits, _ = model(ims_x_weak.cuda())
-        # logits = model(imgs)
-        # logits_z = de_interleave(logit_z, 2 * mu + 1)
-        # logits = de_interleave(logits, 2 * mu + 1)
-
-        # SEPARACION DE ULTIMAS REPRESENTACIONES PARA SIMCLR
-        # logits_s_w_z, logits_s_s_z = torch.split(logits_z[-2 * mu * bt:], bt * mu)
-        # logits_s_w_z, logits_s_s_z = torch.split(logits_z[bt:], bt * mu)
-
-        # SEPARACION DE LOGITS PARA ETAPA SUPERVISADA DE FIXMATCH
-        # logits_x = logits[:bt]
-        # SEPARACION DE LOGITS PARA ETAPA NO SUPERVISADA DE FIXMATCH
-        # logits_u_w, logits_u_s = torch.split(logits[bt:-2 * mu * bt], bt * mu)
-
-        # calculo de la mascara con transformacion debil de fixmatch
-        # with torch.no_grad():
-        #     probs = torch.softmax(logits_u_w, dim=1)
-        #     scores, lbs_u_guess = torch.max(probs, dim=1)
-        #     mask = scores.ge(0.95).float()
-
-        # calcular perdida de fixmatch
-        # loss_u = (criteria_u(logits_u_s, lbs_u_guess) * mask).mean()
-        loss_x = criteria_x(logits, lbs_x)
-        # loss_s = criteria_z(logits_s_w_z, logits_s_s_z)
-
-        # loss = loss_x + loss_u * lambda_u + loss_s * lambda_s
-        loss = loss_x
-        # loss = loss_s * lambda_s
-
-        optim.zero_grad()
-        loss.backward()
-        optim.step()
-        ema.update_params()
-        lr_schdlr.step()
-
-        loss_meter.update(loss.item())
-        loss_x_meter.update(loss_x.item())
-        # loss_u_meter.update(loss_u.item())
-        # loss_u_real_meter.update(loss_u_real.item())
-        # loss_simclr_meter.update(loss_s.item())
-        # mask_meter.update(mask.mean().item())
-
-        # corr_u_lb = (lbs_u_guess == lbs_u_real).float() * mask
-        # n_correct_u_lbs_meter.update(corr_u_lb.sum().item())
-        # n_strong_aug_meter.update(mask.sum().item())
-
-        if (it + 1) % 512 == 0:
-            t = time.time() - epoch_start
-
-            lr_log = [pg['lr'] for pg in optim.param_groups]
-            lr_log = sum(lr_log) / len(lr_log)
-
-            logger.info("epoch:{}, iter: {}. loss: {:.4f}. loss_x: {:.4f}. "
-                        " LR: {:.4f}. Time: {:.2f}".format(
-                epoch, it + 1, loss_meter.avg, loss_x_meter.avg, lr_log, t))
 
             epoch_start = time.time()
 
@@ -433,7 +282,82 @@ def evaluate(ema, dataloader, criterion):
             lbs = lbs.cuda()
             logits, _ = ema.model(ims)
             # logits = ema.model(ims)
+            print(logits.shape, lbs.shape)
+            print(lbs)
+            break
             loss = criterion(logits, lbs)
+            scores = torch.softmax(logits, dim=1)
+            top1, top5 = accuracy(scores, lbs, (1, 5))
+            loss_meter.update(loss.item())
+            top1_meter.update(top1.item())
+            top5_meter.update(top5.item())
+
+    # note roll back model current params to continue training
+    ema.restore()
+    return top1_meter.avg, top5_meter.avg, loss_meter.avg
+
+
+from sklearn.linear_model import LogisticRegression
+
+
+def evaluate_simclr(ema, trainloader, dataloader, criterion):
+    # using EMA params to evaluate performance
+    ema.apply_shadow()
+    ema.model.eval()
+    ema.model.cuda()
+
+    loss_meter = AverageMeter()
+    top1_meter = AverageMeter()
+    top5_meter = AverageMeter()
+
+    cls_model = LogisticRegression(random_state=0, max_iter=10000)
+
+    FEATURES = []
+    LABS = []
+
+    trainloader = iter(trainloader)
+
+    with torch.no_grad():
+        print('training classifier')
+        for it in range(100):
+            ims, _, labs = next(trainloader)
+            ims = ims.cuda()
+            _, features = ema.model(ims)
+            features = features.cpu().numpy()
+            labs = labs.cpu().numpy()
+
+            FEATURES.append(features)
+            LABS.append(labs)
+
+        FEATURES = np.vstack(FEATURES)
+        LABS = np.array(LABS).ravel()
+
+        # print(FEATURES.shape, LABS.shape)
+        # print(LABS)
+
+        cls_model = cls_model.fit(FEATURES, LABS)
+        print(cls_model.score(FEATURES, LABS))
+
+    # matches = []
+    with torch.no_grad():
+        print('evaluating classifier')
+        for ims, lbs in dataloader:
+            ims = ims.cuda()
+            lbs = lbs.cuda()
+            _, features = ema.model(ims)
+
+            predictions = cls_model.predict(features.cpu().numpy())
+
+            logits = torch.from_numpy(np.eye(10, dtype='float')[predictions]).cuda()
+
+            # print(torch.from_numpy(predictions))
+            # print(torch.from_numpy(predictions).cuda().shape, lbs.shape)
+
+            loss = criterion(logits, lbs)
+            # loss = torch.zeros(1)
+
+            # print(cls_model.score(features.cpu().numpy(), lbs.cpu().numpy()))
+
             scores = torch.softmax(logits, dim=1)
             top1, top5 = accuracy(scores, lbs, (1, 5))
             loss_meter.update(loss.item())
@@ -561,13 +485,16 @@ def main():
     for epoch in range(args.n_epoches):
 
         if epoch < 512: # entrenar simclr
+            # entrenar feature representation simclr
             train_loss, loss_x, loss_u, loss_u_real, loss_simclr, mask_mean = train_one_epoch_simclr(epoch, **train_args)
+            # train_loss, loss_x, loss_u, loss_u_real, loss_simclr, mask_mean = [], [], [], [], [], []
+            # top1, top5, valid_loss = evaluate(ema, dlval, criteria_x)
+            top1, top5, valid_loss = evaluate_simclr(ema, dltrain_x, dlval, criteria_x)
         else:
             train_loss, loss_x, loss_u, loss_u_real, loss_simclr, mask_mean = train_one_epoch(epoch, **train_args)
+            top1, top5, valid_loss = evaluate(ema, dlval, criteria_x)
 
         # torch.cuda.empty_cache()
-
-        top1, top5, valid_loss = evaluate(ema, dlval, criteria_x)
 
         writer.add_scalars('train/1.loss', {'train': train_loss,
                                             'test': valid_loss}, epoch)
