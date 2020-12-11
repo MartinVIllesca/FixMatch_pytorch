@@ -17,6 +17,7 @@ from datasets.cifar import get_train_loader, get_val_loader
 from label_guessor import LabelGuessor
 from lr_scheduler import WarmupCosineLrScheduler
 from models.ema import EMA
+from modules.IID_losses import IID_loss, compute_joint
 
 from utils import accuracy, setup_default_logging, interleave, de_interleave
 
@@ -36,16 +37,6 @@ def set_model(args):
     criteria_u = nn.CrossEntropyLoss(reduction='none').cuda()
     return model, criteria_x, criteria_u
 
-
-def iic(z, zt):
-    C = 10
-    EPS = 1e-9
-    P = (z.unsqueeze(2) * zt.unsqueeze(1)).sum(dim=0)
-    P = ((P + P.t()) / 2) / P.sum()
-    P[(P < EPS).data] = EPS
-    Pi = P.sum(dim=1).view(C, 1).expand(C, C)
-    Pj = P.sum(dim=0).view(1, C).expand(C, C)
-    return (P * (torch.log(Pi) + torch.log(Pj) - torch.log(P))).sum()
 
 
 def train_one_epoch(epoch,
@@ -102,7 +93,7 @@ def train_one_epoch(epoch,
             scores, lbs_u_guess = torch.max(probs, dim=1)
             mask = scores.ge(0.95).float()
 
-        loss_u = - iic(logits_u_w, logits_u_s)
+        loss_u = -IID_loss(logits_u_w, logits_u_s)
         loss = loss_x + lambda_u * loss_u
         loss_u_real = (F.cross_entropy(logits_u_s, lbs_u_real) * mask).mean()
 
