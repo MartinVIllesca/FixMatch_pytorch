@@ -185,17 +185,11 @@ def train_one_epoch(epoch,
 
 def train_one_epoch_simclr(epoch,
                            model,
-                           criteria_x,
-                           criteria_u,
                            criteria_z,
                            optim,
                            lr_schdlr,
                            ema,
-                           dltrain_x,
-                           dltrain_u,
                            dltrain_f,
-                           lb_guessor,
-                           lambda_u,
                            lambda_s,
                            n_iters,
                            logger,
@@ -217,9 +211,7 @@ def train_one_epoch_simclr(epoch,
 
     epoch_start = time.time()  # start time
     # dl_x, dl_u, dl_f = iter(dltrain_x), iter(dltrain_u), iter(dltrain_f)
-    dl_x, dl_f = iter(dltrain_x), iter(dltrain_f)
-    # dl_f = iter(dltrain_f)
-    # mu = 1
+    dl_f = iter(dltrain_f)
     for it in range(n_iters):
         ims_s_weak, ims_s_strong, lbs_s_real = next(dl_f) # con transformaciones de simclr
 
@@ -229,14 +221,13 @@ def train_one_epoch_simclr(epoch,
         imgs = interleave(imgs, 2 * mu)
         logits, logit_z = model(imgs)
         logits_z = de_interleave(logit_z, 2 * mu)
-        logits = de_interleave(logits, 2 * mu)
 
         # SEPARACION DE ULTIMAS REPRESENTACIONES PARA SIMCLR
         logits_s_w_z, logits_s_s_z = torch.split(logits_z, bt * mu)
 
         loss_s = criteria_z(logits_s_w_z, logits_s_s_z)
 
-        loss = loss_s / mu
+        loss = lambda_s * loss_s
 
         optim.zero_grad()
         loss.backward()
@@ -318,7 +309,7 @@ def evaluate_simclr(ema, trainloader, dataloader, criterion):
     trainloader = iter(trainloader)
 
     with torch.no_grad():
-        print('training classifier')
+        print('training classifier: ', end='')
         for it in range(100):
             ims, _, labs = next(trainloader)
             ims = ims.cuda()
@@ -332,15 +323,9 @@ def evaluate_simclr(ema, trainloader, dataloader, criterion):
         FEATURES = np.vstack(FEATURES)
         LABS = np.array(LABS).ravel()
 
-        # print(FEATURES.shape, LABS.shape)
-        # print(LABS)
-
         cls_model = cls_model.fit(FEATURES, LABS)
-        print(cls_model.score(FEATURES, LABS))
+        print(cls_model.score(FEATURES, LABS), FEATURES.shape)
 
-    # matches = []
-    with torch.no_grad():
-        print('evaluating classifier')
         for ims, lbs in dataloader:
             ims = ims.cuda()
             lbs = lbs.cuda()
@@ -350,13 +335,7 @@ def evaluate_simclr(ema, trainloader, dataloader, criterion):
 
             logits = torch.from_numpy(np.eye(10, dtype='float')[predictions]).cuda()
 
-            # print(torch.from_numpy(predictions))
-            # print(torch.from_numpy(predictions).cuda().shape, lbs.shape)
-
             loss = criterion(logits, lbs)
-            # loss = torch.zeros(1)
-
-            # print(cls_model.score(features.cpu().numpy(), lbs.cpu().numpy()))
 
             scores = torch.softmax(logits, dim=1)
             top1, top5 = accuracy(scores, lbs, (1, 5))
@@ -460,6 +439,13 @@ def main():
         optim, max_iter=n_iters_all, warmup_iter=0
     )
 
+
+    optim_simclr = torch.optim.SGD(param_list, lr=args.lr, weight_decay=args.weight_decay,
+                            momentum=args.momentum, nesterov=True)
+    lr_schdlr_simclr = WarmupCosineLrScheduler(
+        optim, max_iter=n_iters_all, warmup_iter=0
+    )
+
     train_args = dict(
         model=model,
         criteria_x=criteria_x,
@@ -479,16 +465,27 @@ def main():
         bt=args.batchsize,
         mu=args.mu
     )
+    train_args_simclr = dict(
+        model=model,
+        criteria_z=criteria_z,
+        optim=optim_simclr,
+        lr_schdlr=lr_schdlr_simclr,
+        ema=ema,
+        dltrain_f=dltrain_f,
+        lambda_s=args.lam_s,
+        n_iters=n_iters_per_epoch,
+        logger=logger,
+        bt=args.batchsize,
+        mu=args.mu
+    )
     best_acc = -1
     best_epoch = 0
     logger.info('-----------start training--------------')
     for epoch in range(args.n_epoches):
 
-        if epoch < 512: # entrenar simclr
+        if epoch < 12: # entrenar simclr
             # entrenar feature representation simclr
-            train_loss, loss_x, loss_u, loss_u_real, loss_simclr, mask_mean = train_one_epoch_simclr(epoch, **train_args)
-            # train_loss, loss_x, loss_u, loss_u_real, loss_simclr, mask_mean = [], [], [], [], [], []
-            # top1, top5, valid_loss = evaluate(ema, dlval, criteria_x)
+            train_loss, loss_x, loss_u, loss_u_real, loss_simclr, mask_mean = train_one_epoch_simclr(epoch, **train_args_simclr)
             top1, top5, valid_loss = evaluate_simclr(ema, dltrain_x, dlval, criteria_x)
         else:
             train_loss, loss_x, loss_u, loss_u_real, loss_simclr, mask_mean = train_one_epoch(epoch, **train_args)
