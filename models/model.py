@@ -182,6 +182,7 @@ class WideResnet(nn.Module):
         super(WideResnet, self).__init__()
         self.n_layers, self.k = n, k
         self.backbone = WideResnetBackbone(k=k, n=n)
+        # self.classifier = nn.Linear(64 * self.k, n_classes, bias=True)
         self.classifier = nn.Linear(64 * self.k, n_classes, bias=True)
         self.projector = nn.Sequential(
             nn.Linear(64 * self.k, 64 * self.k, bias=False),

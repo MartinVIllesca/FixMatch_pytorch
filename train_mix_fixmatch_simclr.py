@@ -197,16 +197,11 @@ def train_one_epoch_simclr(epoch,
                            mu
                            ):
     model.train()
-    # loss_meter, loss_x_meter, loss_u_meter, loss_u_real_meter = [], [], [], []
     loss_meter = AverageMeter()
     loss_x_meter = AverageMeter()
     loss_u_meter = AverageMeter()
     loss_u_real_meter = AverageMeter()
     loss_simclr_meter = AverageMeter()
-    # the number of correctly-predicted and gradient-considered unlabeled data
-    n_correct_u_lbs_meter = AverageMeter()
-    # the number of gradient-considered strong augmentation (logits above threshold) of unlabeled samples
-    n_strong_aug_meter = AverageMeter()
     mask_meter = AverageMeter()
 
     epoch_start = time.time()  # start time
@@ -227,7 +222,7 @@ def train_one_epoch_simclr(epoch,
 
         loss_s = criteria_z(logits_s_w_z, logits_s_s_z)
 
-        loss = lambda_s * loss_s
+        loss = loss_s
 
         optim.zero_grad()
         loss.backward()
@@ -273,9 +268,6 @@ def evaluate(ema, dataloader, criterion):
             lbs = lbs.cuda()
             logits, _ = ema.model(ims)
             # logits = ema.model(ims)
-            print(logits.shape, lbs.shape)
-            print(lbs)
-            break
             loss = criterion(logits, lbs)
             scores = torch.softmax(logits, dim=1)
             top1, top5 = accuracy(scores, lbs, (1, 5))
@@ -431,19 +423,18 @@ def main():
             # print(name)
         else:
             wd_params.append(param)
+
     param_list = [
         {'params': wd_params}, {'params': non_wd_params, 'weight_decay': 0}]
-    optim = torch.optim.SGD(param_list, lr=args.lr, weight_decay=args.weight_decay,
-                            momentum=args.momentum, nesterov=True)
-    lr_schdlr = WarmupCosineLrScheduler(
-        optim, max_iter=n_iters_all, warmup_iter=0
-    )
 
+    # recien puse esto
+    # param_list = [
+    #     {'params': wd_params, 'lr': args.lr, 'weight_decay': args.weight_decay}, {'params': non_wd_params, 'weight_decay': 0}]
 
-    optim_simclr = torch.optim.SGD(param_list, lr=args.lr, weight_decay=args.weight_decay,
+    optim_fix = torch.optim.SGD(param_list, lr=args.lr, weight_decay=args.weight_decay,
                             momentum=args.momentum, nesterov=True)
-    lr_schdlr_simclr = WarmupCosineLrScheduler(
-        optim, max_iter=n_iters_all, warmup_iter=0
+    lr_schdlr_fix = WarmupCosineLrScheduler(
+        optim_fix, max_iter=n_iters_all, warmup_iter=0
     )
 
     train_args = dict(
@@ -451,8 +442,8 @@ def main():
         criteria_x=criteria_x,
         criteria_u=criteria_u,
         criteria_z=criteria_z,
-        optim=optim,
-        lr_schdlr=lr_schdlr,
+        optim=optim_fix,
+        lr_schdlr=lr_schdlr_fix,
         ema=ema,
         dltrain_x=dltrain_x,
         dltrain_u=dltrain_u,
@@ -465,6 +456,17 @@ def main():
         bt=args.batchsize,
         mu=args.mu
     )
+
+    param_list = [
+        {'params': wd_params}, {'params': non_wd_params, 'weight_decay': 0}]
+
+    optim_simclr = torch.optim.SGD(param_list, lr=0.5, weight_decay=args.weight_decay,
+                                   momentum=args.momentum, nesterov=False)
+
+    lr_schdlr_simclr = WarmupCosineLrScheduler(
+        optim_simclr, max_iter=n_iters_all, warmup_iter=0
+    )
+
     train_args_simclr = dict(
         model=model,
         criteria_z=criteria_z,
@@ -478,15 +480,17 @@ def main():
         bt=args.batchsize,
         mu=args.mu
     )
+
     best_acc = -1
     best_epoch = 0
     logger.info('-----------start training--------------')
     for epoch in range(args.n_epoches):
 
-        if epoch < 12: # entrenar simclr
+        if epoch < 600:
             # entrenar feature representation simclr
-            train_loss, loss_x, loss_u, loss_u_real, loss_simclr, mask_mean = train_one_epoch_simclr(epoch, **train_args_simclr)
-            top1, top5, valid_loss = evaluate_simclr(ema, dltrain_x, dlval, criteria_x)
+            train_loss, loss_x, loss_u, loss_u_real, loss_simclr, mask_mean = train_one_epoch_simclr(epoch,
+                                                                                                     **train_args_simclr)
+            top1, top5, valid_loss = evaluate_simclr(ema, dltrain_f, dlval, criteria_x)
         else:
             train_loss, loss_x, loss_u, loss_u_real, loss_simclr, mask_mean = train_one_epoch(epoch, **train_args)
             top1, top5, valid_loss = evaluate(ema, dlval, criteria_x)
