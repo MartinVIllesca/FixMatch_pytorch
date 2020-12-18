@@ -232,6 +232,7 @@ def get_train_loader(dataset, batch_size, mu, n_iters_per_epoch, L, root='data',
     )
     return dl_x, dl_u
 
+
 def get_train_loader_mix(dataset, batch_size, mu, n_iters_per_epoch, L, root='data', use_fixmatch=0):
     data_x, label_x, data_u, label_u = load_data_train(L=L, dataset=dataset, dspth=root)
 
@@ -265,8 +266,6 @@ def get_train_loader_mix(dataset, batch_size, mu, n_iters_per_epoch, L, root='da
         num_workers=2,
         pin_memory=True
     )
-    # se tiene una imagen por etiqueta para simclr
-    # mu = 1
     ds_f = Cifar(
         dataset=dataset,
         data=data_u,
