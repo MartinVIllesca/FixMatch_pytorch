@@ -3,7 +3,7 @@ import sys
 import torch
 
 
-def IID_loss(x_out, x_tf_out, lamb=1.0, EPS=sys.float_info.epsilon):
+def IIC_loss(x_out, x_tf_out, lamb=1.0, EPS=sys.float_info.epsilon):
     # has had softmax applied
     _, k = x_out.size()
     p_i_j = compute_joint(x_out, x_tf_out)
