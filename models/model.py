@@ -197,7 +197,7 @@ class WideResnet(nn.Module):
         # feat = self.classifier(h.detach())
         feat = self.classifier(h)
         z = self.projector(h)
-        return feat, z
+        return feat, z, h
 
     def init_weight(self):
         nn.init.xavier_normal_(self.classifier.weight)
