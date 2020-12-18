@@ -33,9 +33,9 @@ def set_model(args):
     model = WideResnet(n_classes=10 if args.dataset == 'CIFAR10' else 100,
                        k=args.wresnet_k, n=args.wresnet_n)  # wresnet-28-2
 
-    # name = 'simclr_trained.pt'
-    # model.load_state_dict(torch.load(name))
-    # print('model loaded')
+    name = 'simclr_trained.pt'
+    model.load_state_dict(torch.load(name))
+    print('model loaded')
 
     model.train()
     model.cuda()
@@ -89,7 +89,7 @@ def train_one_epoch(epoch,
         # --------------------------------------
         imgs = torch.cat([ims_x_weak, ims_u_weak, ims_u_strong], dim=0).cuda()
         imgs = interleave(imgs, 2 * mu + 1)
-        logits, logit_z = model(imgs)
+        logits, logit_z, _ = model(imgs)
         logits = de_interleave(logits, 2 * mu + 1)
 
         # SEPARACION DE LOGITS PARA ETAPA SUPERVISADA DE FIXMATCH
@@ -171,7 +171,7 @@ def train_one_epoch_simclr(epoch,
 
         imgs = torch.cat([ims_s_weak, ims_s_strong], dim=0).cuda()
         imgs = interleave(imgs, 2 * mu)
-        logits, logit_z = model(imgs)
+        logits, logit_z, _ = model(imgs)
         logits_z = de_interleave(logit_z, 2 * mu)
 
         # SEPARACION DE ULTIMAS REPRESENTACIONES PARA SIMCLR
@@ -229,7 +229,7 @@ def train_one_epoch_iic(epoch,
 
         imgs = torch.cat([ims_s_weak, ims_s_strong], dim=0).cuda()
         imgs = interleave(imgs, 2 * mu)
-        logits, logit_z = model(imgs)
+        logits, logit_z, _ = model(imgs)
         logits_z = de_interleave(logit_z, 2 * mu)
 
         # SEPARACION DE ULTIMAS REPRESENTACIONES PARA SIMCLR
@@ -280,7 +280,7 @@ def evaluate(ema, dataloader, criterion):
         for ims, lbs in dataloader:
             ims = ims.cuda()
             lbs = lbs.cuda()
-            logits, _ = ema.model(ims)
+            logits, _, _ = ema.model(ims)
             # logits = ema.model(ims)
             loss = criterion(logits, lbs)
             scores = torch.softmax(logits, dim=1)
@@ -319,7 +319,7 @@ def evaluate_linear_Clf(ema, trainloader, dataloader, criterion):
         for it in range(100):
             ims, _, labs = next(trainloader)
             ims = ims.cuda()
-            _, features = ema.model(ims)
+            _, _, features = ema.model(ims)
             features = features.cpu().numpy()
             labs = labs.cpu().numpy()
 
@@ -335,7 +335,7 @@ def evaluate_linear_Clf(ema, trainloader, dataloader, criterion):
         for ims, lbs in dataloader:
             ims = ims.cuda()
             lbs = lbs.cuda()
-            _, features = ema.model(ims)
+            _, _, features = ema.model(ims)
 
             predictions = cls_model.predict(features.cpu().numpy())
 
@@ -352,6 +352,63 @@ def evaluate_linear_Clf(ema, trainloader, dataloader, criterion):
     # note roll back model current params to continue training
     ema.restore()
     return top1_meter.avg, top5_meter.avg, loss_meter.avg
+
+
+def evaluate_Clf(model, trainloader, dataloader, criterion):
+    # using EMA params to evaluate performance
+    # ema.apply_shadow()
+    # ema.model.eval()
+    # ema.model.cuda()
+
+    loss_meter = AverageMeter()
+    top1_meter = AverageMeter()
+    top5_meter = AverageMeter()
+
+    cls_model = LogisticRegression(random_state=0, max_iter=10000)
+
+    FEATURES = []
+    LABS = []
+
+    trainloader = iter(trainloader)
+
+    with torch.no_grad():
+        print('training classifier: ', end='')
+        for it in range(100):
+            ims, _, labs = next(trainloader)
+            ims = ims.cuda()
+            _, _, features = model(ims)
+            features = features.cpu().numpy()
+            labs = labs.cpu().numpy()
+
+            FEATURES.append(features)
+            LABS.append(labs)
+
+        FEATURES = np.vstack(FEATURES)
+        LABS = np.array(LABS).ravel()
+
+        cls_model = cls_model.fit(FEATURES, LABS)
+        print(cls_model.score(FEATURES, LABS), FEATURES.shape)
+
+        for ims, lbs in dataloader:
+            ims = ims.cuda()
+            lbs = lbs.cuda()
+            _, _, features = model(ims)
+
+            predictions = cls_model.predict(features.cpu().numpy())
+
+            logits = torch.from_numpy(np.eye(10, dtype='float')[predictions]).cuda()
+
+            loss = criterion(logits, lbs)
+
+            scores = torch.softmax(logits, dim=1)
+            top1, top5 = accuracy(scores, lbs, (1, 5))
+            loss_meter.update(loss.item())
+            top1_meter.update(top1.item())
+            top5_meter.update(top5.item())
+
+    # ema.restore()
+
+    return
 
 
 def main():
@@ -418,6 +475,7 @@ def main():
     logger.info(f"  Total optimization steps = {n_iters_all}")
 
     model, criteria_x, criteria_u, criteria_z = set_model(args)
+
     logger.info("Total params: {:.2f}M".format(
         sum(p.numel() for p in model.parameters()) / 1e6))
 
@@ -429,6 +487,7 @@ def main():
 
     ema = EMA(model, args.ema_alpha)
 
+
     wd_params, non_wd_params = [], []
     for name, param in model.named_parameters():
         # if len(param.size()) == 1:
@@ -437,6 +496,7 @@ def main():
             # print(name)
         else:
             wd_params.append(param)
+
 
     param_list = [
         {'params': wd_params}, {'params': non_wd_params, 'weight_decay': 0}]
@@ -494,8 +554,7 @@ def main():
     # param_list = [
     #     {'params': wd_params}, {'params': non_wd_params, 'weight_decay': 0}]
     #
-    # optim_iic = torch.optim.SGD(param_list, lr=0.5, weight_decay=args.weight_decay,
-    #                                momentum=args.momentum, nesterov=False)
+    # optim_iic = torch.optim.Adam(param_list, lr=1e-4, weight_decay=args.weight_decay)
     #
     # lr_schdlr_iic = WarmupCosineLrScheduler(
     #     optim_iic, max_iter=n_iters_all, warmup_iter=0
@@ -518,8 +577,11 @@ def main():
     logger.info('-----------start training--------------')
 
     for epoch in range(args.n_epoches):
+        # guardar accuracy de modelo preentrenado hasta espacio h
+        top1, top5, valid_loss = evaluate_linear_Clf(ema, dltrain_f, dlval, criteria_x)
+        writer.add_scalars('test/1.test_linear_acc', {'top1': top1, 'top5': top5}, epoch)
 
-        if epoch < 100:
+        if epoch < -1:
             # entrenar feature representation simclr
             train_loss, loss_simclr, model_ = train_one_epoch_simclr(epoch, **train_args_simclr)
             writer.add_scalar('train/4.train_loss_simclr', loss_simclr, epoch)
@@ -527,11 +589,12 @@ def main():
             # entrenar iic
             # train_loss,  loss_iic = train_one_epoch_iic(epoch, **train_args_iic)
             # writer.add_scalar('train/4.train_loss_iic', loss_iic, epoch)
+            # evaluate_Clf(model_, dltrain_f, dlval, criteria_x)
 
             top1, top5, valid_loss = evaluate_linear_Clf(ema, dltrain_f, dlval, criteria_x)
             if epoch == 98:
                 # save model
-                name = 'simclr_trained.pt'
+                name = 'simclr_trained_goog_h.pt'
                 torch.save(model_.state_dict(), name)
                 logger.info('model saved')
 
