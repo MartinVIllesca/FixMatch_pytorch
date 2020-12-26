@@ -53,9 +53,9 @@ def set_model(args):
     model = WideResnet(n_classes=10 if args.dataset == 'CIFAR10' else 100,
                        k=args.wresnet_k, n=args.wresnet_n)  # wresnet-28-2
 
-    name = 'simclr_trained_good_h2.pt'
-    model.load_state_dict(torch.load(name))
-    print('model loaded')
+    # name = 'simclr_trained_good_h2.pt'
+    # model.load_state_dict(torch.load(name))
+    # print('model loaded')
 
     model.train()
     model.cuda()
@@ -99,26 +99,30 @@ def train_one_epoch(epoch,
     mask_meter = AverageMeter()
 
     epoch_start = time.time()  # start time
-    dl_x, dl_u, dl_f = iter(dltrain_x), iter(dltrain_u), iter(dltrain_f)
+    # dl_x, dl_u, dl_f = iter(dltrain_x), iter(dltrain_u), iter(dltrain_f)
+    dl_x, dl_u = iter(dltrain_x), iter(dltrain_u)
     for it in range(n_iters):
         ims_x_weak, ims_x_strong, lbs_x = next(dl_x)
         ims_u_weak, ims_u_strong, lbs_u_real = next(dl_u) # transformaciones de fixmatch
-        ims_s_weak, ims_s_strong, lbs_s_real = next(dl_f) # con transformaciones de simclr
+        # ims_s_weak, ims_s_strong, lbs_s_real = next(dl_f) # con transformaciones de simclr
 
         lbs_x = lbs_x.cuda()
         lbs_u_real = lbs_u_real.cuda()
 
         # --------------------------------------
-        imgs = torch.cat([ims_x_weak, ims_u_weak, ims_u_strong, ims_s_weak, ims_s_strong], dim=0).cuda()
-        imgs = interleave(imgs, 4 * mu + 1)
+        # imgs = torch.cat([ims_x_weak, ims_u_weak, ims_u_strong, ims_s_weak, ims_s_strong], dim=0).cuda()
+        imgs = torch.cat([ims_x_weak, ims_u_weak, ims_u_strong], dim=0).cuda()
+        # imgs = interleave(imgs, 4 * mu + 1)
+        imgs = interleave(imgs, 2 * mu + 1)
         logits, logit_z, _ = model(imgs)
-        logits = de_interleave(logits, 4 * mu + 1)
+        # logits = de_interleave(logits, 4 * mu + 1)
+        logits = de_interleave(logits, 2 * mu + 1)
 
         # SEPARACION DE LOGITS PARA ETAPA SUPERVISADA DE FIXMATCH
         logits_x = logits[:bt]
         # SEPARACION DE LOGITS PARA ETAPA NO SUPERVISADA DE FIXMATCH
-        logits_u_w, logits_u_s, _, _ = torch.split(logits[bt:], bt * mu)
-        _, _, logits_s_w, logits_s_s = torch.split(logit_z[bt:], bt * mu)
+        logits_u_w, logits_u_s = torch.split(logits[bt:], bt * mu)
+        # _, _, logits_s_w, logits_s_s = torch.split(logit_z[bt:], bt * mu)
 
         # calculo de la mascara con transformacion debil de fixmatch
         with torch.no_grad():
@@ -127,11 +131,11 @@ def train_one_epoch(epoch,
             mask = scores.ge(0.95).float()
 
         # calcular perdida de fixmatch
-        loss_s = criteria_z(logits_s_w, logits_s_s)
+        # loss_s = criteria_z(logits_s_w, logits_s_s)
         loss_u = (criteria_u(logits_u_s, lbs_u_guess) * mask).mean()
         loss_x = criteria_x(logits_x, lbs_x)
 
-        loss = loss_x + loss_u * lambda_u + loss_s * lambda_s
+        loss = loss_x + loss_u * lambda_u# + loss_s * lambda_s
 
         loss_u_real = (F.cross_entropy(logits_u_s, lbs_u_real) * mask).mean()
 
@@ -145,7 +149,7 @@ def train_one_epoch(epoch,
         loss_x_meter.update(loss_x.item())
         loss_u_meter.update(loss_u.item())
         loss_u_real_meter.update(loss_u_real.item())
-        loss_simclr_meter.update(loss_s.item())
+        # loss_simclr_meter.update(loss_s.item())
         mask_meter.update(mask.mean().item())
 
         corr_u_lb = (lbs_u_guess == lbs_u_real).float() * mask
@@ -158,17 +162,23 @@ def train_one_epoch(epoch,
             lr_log = [pg['lr'] for pg in optim.param_groups]
             lr_log = sum(lr_log) / len(lr_log)
 
+            # logger.info("epoch:{}, iter: {}. loss: {:.4f}. loss_u: {:.4f}. loss_x: {:.4f}. loss_u_real: {:.4f}. "
+            #             "n_correct_u: {:.2f}/{:.2f}. loss_s: {:.4f}"
+            #             "Mask:{:.4f} . LR: {:.4f}. Time: {:.2f}".format(
+            #     epoch, it + 1, loss_meter.avg, loss_u_meter.avg, loss_x_meter.avg, loss_u_real_meter.avg,
+            #     n_correct_u_lbs_meter.avg, n_strong_aug_meter.avg, loss_simclr_meter.avg, mask_meter.avg, lr_log, t))
+
             logger.info("epoch:{}, iter: {}. loss: {:.4f}. loss_u: {:.4f}. loss_x: {:.4f}. loss_u_real: {:.4f}. "
-                        "n_correct_u: {:.2f}/{:.2f}. loss_s: {:.4f}"
+                        "n_correct_u: {:.2f}/{:.2f}."
                         "Mask:{:.4f} . LR: {:.4f}. Time: {:.2f}".format(
                 epoch, it + 1, loss_meter.avg, loss_u_meter.avg, loss_x_meter.avg, loss_u_real_meter.avg,
-                n_correct_u_lbs_meter.avg, n_strong_aug_meter.avg, loss_simclr_meter.avg, mask_meter.avg, lr_log, t))
+                n_correct_u_lbs_meter.avg, n_strong_aug_meter.avg, mask_meter.avg, lr_log, t))
 
             epoch_start = time.time()
 
     ema.update_buffer()
     return loss_meter.avg, loss_x_meter.avg, loss_u_meter.avg,\
-           loss_u_real_meter.avg, mask_meter.avg, loss_simclr_meter.avg
+           loss_u_real_meter.avg, mask_meter.avg
 
 
 def train_one_epoch_simclr(epoch,
@@ -554,29 +564,29 @@ def main():
         mu=args.mu
     )
 
-    param_list = [
-        {'params': wd_params}, {'params': non_wd_params, 'weight_decay': 0}]
-
-    optim_simclr = torch.optim.SGD(param_list, lr=0.5, weight_decay=args.weight_decay,
-                                   momentum=args.momentum, nesterov=False)
-
-    lr_schdlr_simclr = WarmupCosineLrScheduler(
-        optim_simclr, max_iter=n_iters_all, warmup_iter=0
-    )
-
-    train_args_simclr = dict(
-        model=model,
-        criteria_z=criteria_z,
-        optim=optim_simclr,
-        lr_schdlr=lr_schdlr_simclr,
-        ema=ema,
-        dltrain_f=dltrain_f,
-        lambda_s=args.lam_s,
-        n_iters=n_iters_per_epoch,
-        logger=logger,
-        bt=args.batchsize,
-        mu=args.mu
-    )
+    # param_list = [
+    #     {'params': wd_params}, {'params': non_wd_params, 'weight_decay': 0}]
+    #
+    # optim_simclr = torch.optim.SGD(param_list, lr=0.5, weight_decay=args.weight_decay,
+    #                                momentum=args.momentum, nesterov=False)
+    #
+    # lr_schdlr_simclr = WarmupCosineLrScheduler(
+    #     optim_simclr, max_iter=n_iters_all, warmup_iter=0
+    # )
+    #
+    # train_args_simclr = dict(
+    #     model=model,
+    #     criteria_z=criteria_z,
+    #     optim=optim_simclr,
+    #     lr_schdlr=lr_schdlr_simclr,
+    #     ema=ema,
+    #     dltrain_f=dltrain_f,
+    #     lambda_s=args.lam_s,
+    #     n_iters=n_iters_per_epoch,
+    #     logger=logger,
+    #     bt=args.batchsize,
+    #     mu=args.mu
+    # )
 
     # param_list = [
     #     {'params': wd_params}, {'params': non_wd_params, 'weight_decay': 0}]
@@ -629,10 +639,10 @@ def main():
                 logger.info('model saved')
 
         else:
-            train_loss, loss_x, loss_u, loss_u_real, mask_mean, loss_simclr = train_one_epoch(epoch, **train_args)
+            train_loss, loss_x, loss_u, loss_u_real, mask_mean = train_one_epoch(epoch, **train_args)
             top1, top5, valid_loss = evaluate(ema, dlval, criteria_x)
 
-            writer.add_scalar('train/4.train_loss_simclr', loss_simclr, epoch)
+            # writer.add_scalar('train/4.train_loss_simclr', loss_simclr, epoch)
             writer.add_scalar('train/2.train_loss_x', loss_x, epoch)
             writer.add_scalar('train/3.train_loss_u', loss_u, epoch)
             writer.add_scalar('train/4.train_loss_u_real', loss_u_real, epoch)
