@@ -29,11 +29,31 @@ from modules.IIC_losses import IIC_loss, compute_joint
 # os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 
+def mi(P):
+    eps = torch.finfo(P.dtype).eps
+    P[P < eps] = eps
+    m0 = torch.sum(P, dim=0, keepdim=True)
+    m1 = torch.sum(P, dim=1, keepdim=True)
+    return torch.sum((P.log2() - m0.log2() - m1.log2()) * P)
+
+
+def mi_loss(x, x_t):
+    """make a joint distribution from the batch """
+    x = F.softmax(x, dim=1)
+    x_t = F.softmax(x_t, dim=1)
+    P = torch.matmul(x.T, x_t) / x.size(0)
+
+    """symmetrical"""
+    P = (P + P.T) / 2.0
+
+    """return negative of mutual information as loss"""
+    return - mi(P), P
+
 def set_model(args):
     model = WideResnet(n_classes=10 if args.dataset == 'CIFAR10' else 100,
                        k=args.wresnet_k, n=args.wresnet_n)  # wresnet-28-2
 
-    name = 'simclr_trained.pt'
+    name = 'simclr_trained_good_h2.pt'
     model.load_state_dict(torch.load(name))
     print('model loaded')
 
@@ -71,6 +91,7 @@ def train_one_epoch(epoch,
     loss_x_meter = AverageMeter()
     loss_u_meter = AverageMeter()
     loss_u_real_meter = AverageMeter()
+    loss_simclr_meter = AverageMeter()
     # the number of correctly-predicted and gradient-considered unlabeled data
     n_correct_u_lbs_meter = AverageMeter()
     # the number of gradient-considered strong augmentation (logits above threshold) of unlabeled samples
@@ -78,24 +99,26 @@ def train_one_epoch(epoch,
     mask_meter = AverageMeter()
 
     epoch_start = time.time()  # start time
-    dl_x, dl_u = iter(dltrain_x), iter(dltrain_u)
+    dl_x, dl_u, dl_f = iter(dltrain_x), iter(dltrain_u), iter(dltrain_f)
     for it in range(n_iters):
         ims_x_weak, ims_x_strong, lbs_x = next(dl_x)
         ims_u_weak, ims_u_strong, lbs_u_real = next(dl_u) # transformaciones de fixmatch
+        ims_s_weak, ims_s_strong, lbs_s_real = next(dl_f) # con transformaciones de simclr
 
         lbs_x = lbs_x.cuda()
         lbs_u_real = lbs_u_real.cuda()
 
         # --------------------------------------
-        imgs = torch.cat([ims_x_weak, ims_u_weak, ims_u_strong], dim=0).cuda()
-        imgs = interleave(imgs, 2 * mu + 1)
+        imgs = torch.cat([ims_x_weak, ims_u_weak, ims_u_strong, ims_s_weak, ims_s_strong], dim=0).cuda()
+        imgs = interleave(imgs, 4 * mu + 1)
         logits, logit_z, _ = model(imgs)
-        logits = de_interleave(logits, 2 * mu + 1)
+        logits = de_interleave(logits, 4 * mu + 1)
 
         # SEPARACION DE LOGITS PARA ETAPA SUPERVISADA DE FIXMATCH
         logits_x = logits[:bt]
         # SEPARACION DE LOGITS PARA ETAPA NO SUPERVISADA DE FIXMATCH
-        logits_u_w, logits_u_s = torch.split(logits[bt:], bt * mu)
+        logits_u_w, logits_u_s, _, _ = torch.split(logits[bt:], bt * mu)
+        _, _, logits_s_w, logits_s_s = torch.split(logit_z[bt:], bt * mu)
 
         # calculo de la mascara con transformacion debil de fixmatch
         with torch.no_grad():
@@ -104,10 +127,11 @@ def train_one_epoch(epoch,
             mask = scores.ge(0.95).float()
 
         # calcular perdida de fixmatch
+        loss_s = criteria_z(logits_s_w, logits_s_s)
         loss_u = (criteria_u(logits_u_s, lbs_u_guess) * mask).mean()
         loss_x = criteria_x(logits_x, lbs_x)
 
-        loss = loss_x + loss_u * lambda_u
+        loss = loss_x + loss_u * lambda_u + loss_s * lambda_s
 
         loss_u_real = (F.cross_entropy(logits_u_s, lbs_u_real) * mask).mean()
 
@@ -121,6 +145,7 @@ def train_one_epoch(epoch,
         loss_x_meter.update(loss_x.item())
         loss_u_meter.update(loss_u.item())
         loss_u_real_meter.update(loss_u_real.item())
+        loss_simclr_meter.update(loss_s.item())
         mask_meter.update(mask.mean().item())
 
         corr_u_lb = (lbs_u_guess == lbs_u_real).float() * mask
@@ -134,16 +159,16 @@ def train_one_epoch(epoch,
             lr_log = sum(lr_log) / len(lr_log)
 
             logger.info("epoch:{}, iter: {}. loss: {:.4f}. loss_u: {:.4f}. loss_x: {:.4f}. loss_u_real: {:.4f}. "
-                        "n_correct_u: {:.2f}/{:.2f}. "
+                        "n_correct_u: {:.2f}/{:.2f}. loss_s: {:.4f}"
                         "Mask:{:.4f} . LR: {:.4f}. Time: {:.2f}".format(
                 epoch, it + 1, loss_meter.avg, loss_u_meter.avg, loss_x_meter.avg, loss_u_real_meter.avg,
-                n_correct_u_lbs_meter.avg, n_strong_aug_meter.avg, mask_meter.avg, lr_log, t))
+                n_correct_u_lbs_meter.avg, n_strong_aug_meter.avg, loss_simclr_meter.avg, mask_meter.avg, lr_log, t))
 
             epoch_start = time.time()
 
     ema.update_buffer()
     return loss_meter.avg, loss_x_meter.avg, loss_u_meter.avg,\
-           loss_u_real_meter.avg, mask_meter.avg
+           loss_u_real_meter.avg, mask_meter.avg, loss_simclr_meter.avg
 
 
 def train_one_epoch_simclr(epoch,
@@ -229,13 +254,14 @@ def train_one_epoch_iic(epoch,
 
         imgs = torch.cat([ims_s_weak, ims_s_strong], dim=0).cuda()
         imgs = interleave(imgs, 2 * mu)
-        logits, logit_z, _ = model(imgs)
-        logits_z = de_interleave(logit_z, 2 * mu)
+        _, _, logits_iic = model(imgs)
+        logits_iic = de_interleave(logits_iic, 2 * mu)
 
         # SEPARACION DE ULTIMAS REPRESENTACIONES PARA SIMCLR
-        logits_s_w_z, logits_s_s_z = torch.split(logits_z, bt * mu)
+        logits_iic_w, logits_iic_s = torch.split(logits_iic, bt * mu)
 
-        loss_iic = IIC_loss(logits_s_w_z, logits_s_s_z)
+        # loss_iic = IIC_loss(logits_s_w_h, logits_s_s_h)
+        loss_iic, P = mi_loss(logits_iic_w, logits_iic_s)
 
         loss = loss_iic
 
@@ -262,7 +288,7 @@ def train_one_epoch_iic(epoch,
             epoch_start = time.time()
 
     ema.update_buffer()
-    return loss_meter.avg, loss_iic_meter.avg
+    return loss_meter.avg, loss_iic_meter.avg, model
 
 
 def evaluate(ema, dataloader, criterion):
@@ -372,7 +398,7 @@ def evaluate_Clf(model, trainloader, dataloader, criterion):
     trainloader = iter(trainloader)
 
     with torch.no_grad():
-        print('training classifier: ', end='')
+        print('training classifier: ')
         for it in range(100):
             ims, _, labs = next(trainloader)
             ims = ims.cuda()
@@ -386,8 +412,9 @@ def evaluate_Clf(model, trainloader, dataloader, criterion):
         FEATURES = np.vstack(FEATURES)
         LABS = np.array(LABS).ravel()
 
+        print(FEATURES.shape)
         cls_model = cls_model.fit(FEATURES, LABS)
-        print(cls_model.score(FEATURES, LABS), FEATURES.shape)
+        print(cls_model.score(FEATURES, LABS))
 
         for ims, lbs in dataloader:
             ims = ims.cuda()
@@ -571,37 +598,41 @@ def main():
     #     bt=args.batchsize,
     #     mu=args.mu
     # )
-
+    #
     best_acc = -1
     best_epoch = 0
     logger.info('-----------start training--------------')
 
     for epoch in range(args.n_epoches):
         # guardar accuracy de modelo preentrenado hasta espacio h
-        top1, top5, valid_loss = evaluate_linear_Clf(ema, dltrain_f, dlval, criteria_x)
+        top1, top5, valid_loss = evaluate_linear_Clf(ema, dltrain_x, dlval, criteria_x)
         writer.add_scalars('test/1.test_linear_acc', {'top1': top1, 'top5': top5}, epoch)
 
-        if epoch < -1:
+        logger.info("Epoch {}. on h space Top1: {:.4f}. Top5: {:.4f}.".
+                    format(epoch, top1, top5))
+
+        if epoch < -500:
             # entrenar feature representation simclr
             train_loss, loss_simclr, model_ = train_one_epoch_simclr(epoch, **train_args_simclr)
             writer.add_scalar('train/4.train_loss_simclr', loss_simclr, epoch)
 
             # entrenar iic
-            # train_loss,  loss_iic = train_one_epoch_iic(epoch, **train_args_iic)
+            # train_loss, loss_iic, model_ = train_one_epoch_iic(epoch, **train_args_iic)
             # writer.add_scalar('train/4.train_loss_iic', loss_iic, epoch)
             # evaluate_Clf(model_, dltrain_f, dlval, criteria_x)
 
-            top1, top5, valid_loss = evaluate_linear_Clf(ema, dltrain_f, dlval, criteria_x)
-            if epoch == 98:
+            top1, top5, valid_loss = evaluate_linear_Clf(ema, dltrain_x, dlval, criteria_x)
+            if epoch == 497:
                 # save model
-                name = 'simclr_trained_goog_h.pt'
+                name = 'simclr_trained_good_h2.pt'
                 torch.save(model_.state_dict(), name)
                 logger.info('model saved')
 
         else:
-            train_loss, loss_x, loss_u, loss_u_real, mask_mean = train_one_epoch(epoch, **train_args)
+            train_loss, loss_x, loss_u, loss_u_real, mask_mean, loss_simclr = train_one_epoch(epoch, **train_args)
             top1, top5, valid_loss = evaluate(ema, dlval, criteria_x)
 
+            writer.add_scalar('train/4.train_loss_simclr', loss_simclr, epoch)
             writer.add_scalar('train/2.train_loss_x', loss_x, epoch)
             writer.add_scalar('train/3.train_loss_u', loss_u, epoch)
             writer.add_scalar('train/4.train_loss_u_real', loss_u_real, epoch)
