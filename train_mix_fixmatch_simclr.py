@@ -486,7 +486,7 @@ def main():
     logger.info('-----------start training--------------')
     for epoch in range(args.n_epoches):
 
-        if epoch < 600:
+        if epoch < 100:
             # entrenar feature representation simclr
             train_loss, loss_x, loss_u, loss_u_real, loss_simclr, mask_mean = train_one_epoch_simclr(epoch,
                                                                                                      **train_args_simclr)
